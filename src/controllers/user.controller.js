@@ -1,6 +1,7 @@
 import * as z from "zod";
 import prisma from "../lib/prisma.js";
 import bcrypt from "bcrypt";
+import cloudinary from "../lib/cloudinary.js";
 import { error } from "console";
 export const getUserbyUsername = async (req, res) => {
   try {
@@ -66,16 +67,25 @@ export const updateUser = async (req, res) => {
     const userId = req.user.id;
 
     if (!userId) {
-      return res.status(401).json({ message: "Unauthorized: User ID not found." });
+      return res
+        .status(401)
+        .json({ message: "Unauthorized: User ID not found." });
     }
 
     // 2. VALIDASI INPUT
     const userSchema = z.object({
-      fullname: z.string().min(3, "Full name must be at least 3 characters long"),
-      username: z.string().min(3, "Username must be at least 3 characters long"),
+      fullname: z
+        .string()
+        .min(3, "Full name must be at least 3 characters long"),
+      username: z
+        .string()
+        .min(3, "Username must be at least 3 characters long"),
       bio: z.string().max(160, "Bio max 160 chars").optional(),
       currentPassword: z.string().optional(),
-      newPassword: z.string().min(6, "New password must be at least 6 characters").optional(),
+      newPassword: z
+        .string()
+        .min(6, "New password must be at least 6 characters")
+        .optional(),
     });
 
     const validation = userSchema.safeParse(req.body);
@@ -87,14 +97,19 @@ export const updateUser = async (req, res) => {
       });
     }
 
-    const { fullname, username, bio, currentPassword, newPassword } = validation.data;
+    const { fullname, username, bio, currentPassword, newPassword } =
+      validation.data;
 
     // 2. LOGIKA VALIDASI PASSWORD (Manual Check)
     // Jika user mengisi newPassword, dia WAJIB mengisi currentPassword juga
     if (newPassword && !currentPassword) {
       return res.status(400).json({
         message: "Validation Failed",
-        errors: { currentPassword: ["Current password is required to set a new password"] },
+        errors: {
+          currentPassword: [
+            "Current password is required to set a new password",
+          ],
+        },
       });
     }
     // 3. AMBIL DATA USER LAMA (Untuk perbandingan)
@@ -117,7 +132,9 @@ export const updateUser = async (req, res) => {
       if (usernameTaken && usernameTaken.id !== userId) {
         return res.status(400).json({
           message: "Username already taken",
-          errors: { username: ["This username is already used by another user"] },
+          errors: {
+            username: ["This username is already used by another user"],
+          },
         });
       }
     }
@@ -126,7 +143,10 @@ export const updateUser = async (req, res) => {
 
     if (newPassword && currentPassword) {
       // Cek apakah password lama benar?
-      const isPasswordValid = await bcrypt.compare(currentPassword, existingUser.password);
+      const isPasswordValid = await bcrypt.compare(
+        currentPassword,
+        existingUser.password
+      );
 
       if (!isPasswordValid) {
         return res.status(400).json({
@@ -156,6 +176,55 @@ export const updateUser = async (req, res) => {
     });
   } catch (error) {
     console.error("Update user error:", error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+export const updatePhotoUser = async (req, res) => {
+  try {
+    // validation
+    if (!req.file) {
+      return res.status(400).json({ message: "Image file is required" });
+    }
+
+    // get user current
+    const userId = req.user.id;
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+    });
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // validasi fungsi hapus foto lama di cloudinary jika ada
+    if (user.imageId) {
+      // hapus foto lama di cloudinary
+      await cloudinary.uploader.destroy(user.imageId);
+    }
+
+    // upload foto dengan buffer multer
+    const fileStr = req.file.buffer.toString("base64");
+    const uploadResponse = await cloudinary.uploader.upload(
+      `data:${req.file.mimetype};base64,${fileStr}`,
+      {
+        folder: "user_photos",
+        transformation: [{ width: 500, height: 500, crop: "fill" }],
+      }
+    );
+    // update database
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        image: uploadResponse.secure_url,
+        imageId: uploadResponse.public_id,
+      },
+    });
+    return res.status(200).json({
+      message: "Photo profile updated successfully",
+      data: { image: updatedUser.image },
+    });
+  } catch (error) {
+    console.error("Update photo error:", error);
     return res.status(500).json({ message: "Internal server error" });
   }
 };
